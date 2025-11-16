@@ -1,13 +1,17 @@
 # purchase_forecaster.py — forecasting engine with service-level logic (NaN-safe)
 
-import json, math
+import json
+import math
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict, field
+
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 
+# Service level z-scores
 _Z_BY_SERVICE = {0.90: 1.282, 0.95: 1.645, 0.98: 2.054, 0.99: 2.326}
+
 
 @dataclass
 class HistoricalSalesData:
@@ -20,12 +24,14 @@ class HistoricalSalesData:
     unit_price: float
     category: str
 
+
 @dataclass
 class MonthlySalesForecast:
     month: str
     forecasted_sales_qty: int
     forecast_source: str
     confidence_score: float
+
 
 @dataclass
 class ItemParameters:
@@ -39,9 +45,10 @@ class ItemParameters:
     shelf_life_days: Optional[float]
     safety_stock_days: int
     max_stock_cover_months: float = 2.0
-    # NEW: for dashboard filtering / grouping
+    # for dashboard filtering
     category: Optional[str] = None
     segment: Optional[str] = None
+
 
 @dataclass
 class CurrentInventory:
@@ -50,6 +57,7 @@ class CurrentInventory:
     in_transit_qty: int
     in_transit_arrival_date: Optional[str]
     committed_qty: int
+
 
 @dataclass
 class PurchaseForecast:
@@ -79,6 +87,7 @@ class PurchaseForecast:
     supplier_name: str
     notes: List[str] = field(default_factory=list)
 
+
 def _num_or_none(x) -> Optional[float]:
     """Return float(x) or None if x is None/NaN/invalid."""
     if x is None:
@@ -91,12 +100,16 @@ def _num_or_none(x) -> Optional[float]:
         return None
     return v
 
+
 class PurchasePlanForecaster:
     """
-    Periodic-review policy:
+    Periodic-review policy with inventory flow:
     S = mean_d*(L+R) + Z*std_d*sqrt(L+R)
-    Order = max(0, S - Available), then cap by stock cover & shelf-life and round to MOQ/multiples.
+    Order = max(0, S - Available),
+    then cap by stock cover & shelf-life and round to MOQ/multiples.
+    Also tracks opening/closing inventory and future cover per month.
     """
+
     def __init__(self):
         self.sales_history: List[HistoricalSalesData] = []
         self.item_params: Dict[str, ItemParameters] = {}
@@ -104,7 +117,8 @@ class PurchasePlanForecaster:
         self.sales_forecasts_n12: Dict[str, List[MonthlySalesForecast]] = {}
         self.forecasts: List[PurchaseForecast] = []
 
-    # loaders
+    # ----------------- loaders -----------------
+
     def load_sales_history(self, data):
         self.sales_history = [HistoricalSalesData(**x) for x in data]
 
@@ -120,11 +134,14 @@ class PurchasePlanForecaster:
         for k, v in data.items():
             self.sales_forecasts_n12[k] = [MonthlySalesForecast(**f) for f in v]
 
-    # helpers
+    # ----------------- helpers -----------------
+
     def _hist_daily_stats(self, item_id: str) -> (float, float):
+        """Return (mean_demand_per_day, std_demand_per_day) from last 12 months history."""
         rows = [r for r in self.sales_history if r.item_id == item_id]
         if not rows:
-            return (1.0, 0.3)
+            return 1.0, 0.3
+
         rows = sorted(rows, key=lambda r: r.month)[-12:]
         monthly = [max(0, r.actual_sales_qty) for r in rows]
         mean_m = sum(monthly) / len(monthly) if monthly else 1.0
@@ -133,6 +150,7 @@ class PurchasePlanForecaster:
             std_m = math.sqrt(var)
         else:
             std_m = 0.25 * mean_m
+
         mean_d = max(mean_m / 30.0, 0.1)
         std_d = max(std_m / 30.0, 0.05 * mean_d)
         return mean_d, std_d
@@ -177,8 +195,9 @@ class PurchasePlanForecaster:
         rounded = ((qty + multiple - 1) // multiple) * multiple
         return max(rounded, moq)
 
-    # core
-        def generate_purchase_plan(self, start_month: str, num_months: int = 6,
+    # ----------------- core planning -----------------
+
+    def generate_purchase_plan(self, start_month: str, num_months: int = 6,
                                service_level: float = 0.95, review_period_days: int = 30,
                                include_in_transit: bool = True):
         """
@@ -194,7 +213,7 @@ class PurchasePlanForecaster:
         R = review_period_days
 
         # Precompute actual sales by (item, month) from history
-        hist_map = {}
+        hist_map: Dict[tuple, int] = {}
         for r in self.sales_history:
             key = (r.item_id, r.month)
             hist_map[key] = hist_map.get(key, 0) + max(0, r.actual_sales_qty)
@@ -275,7 +294,8 @@ class PurchasePlanForecaster:
 
         return self.forecasts
 
-    # exports
+    # ----------------- exports -----------------
+
     def export_to_json(self, filename: str = None):
         out = {
             "generated": datetime.now().isoformat(),
@@ -290,7 +310,7 @@ class PurchasePlanForecaster:
         if not self.forecasts:
             return filename
         df = pd.DataFrame([asdict(f) for f in self.forecasts])
-        df["notes"] = df["notes"].apply(lambda x: "; ".join(x))
+        df["notes"] = df["notes"].apply(lambda x: "; ".join(x) if isinstance(x, list) else (x or ""))
         with pd.ExcelWriter(filename, engine="openpyxl") as w:
             df.to_excel(w, index=False, sheet_name="Forecasts")
         return filename
