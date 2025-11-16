@@ -27,7 +27,88 @@ SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples")
 def _read_csv(path):
     return pd.read_csv(path) if os.path.exists(path) else None
 
-tab_plan, tab_history = st.tabs(["📈 Planner", "🕘 Run History"])
+tab_plan, tab_dashboard, tab_history = st.tabs(["📈 Planner", "📊 Dashboard", "🕘 Run History"])
+with tab_dashboard:
+    st.subheader("Purchase Plan Dashboard")
+
+    if "plan_df" not in st.session_state:
+        st.info("Generate a plan first in the Planner tab.")
+    else:
+        df = st.session_state["plan_df"].copy()
+
+        # ensure proper datetime for filtering
+        df["forecast_month"] = pd.to_datetime(df["forecast_month"], format="%Y-%m", errors="coerce")
+        df = df.dropna(subset=["forecast_month"])
+
+        # --- Date range filters ---
+        min_date = df["forecast_month"].min()
+        max_date = df["forecast_month"].max()
+
+        col_fr, col_to = st.columns(2)
+        from_date = col_fr.date_input("From month", min_date.date() if pd.notna(min_date) else None)
+        to_date = col_to.date_input("To month", max_date.date() if pd.notna(max_date) else None)
+
+        if from_date and to_date:
+            df = df[(df["forecast_month"].dt.date >= from_date) &
+                    (df["forecast_month"].dt.date <= to_date)]
+
+        # --- Category / Segment / SKU filters ---
+        cats = sorted(df["category"].dropna().unique()) if "category" in df.columns else []
+        segs = sorted(df["segment"].dropna().unique()) if "segment" in df.columns else []
+        skus = sorted(df["item_id"].unique())
+
+        c1, c2, c3 = st.columns(3)
+        sel_cat = c1.selectbox("Category", ["All"] + cats) if cats else "All"
+        sel_seg = c2.selectbox("Segment", ["All"] + segs) if segs else "All"
+        sel_sku = c3.selectbox("SKU", skus if skus else [""])
+
+        if sel_cat != "All":
+            df = df[df["category"] == sel_cat]
+        if sel_seg != "All":
+            df = df[df["segment"] == sel_seg]
+        if sel_sku:
+            df = df[df["item_id"] == sel_sku]
+
+        if df.empty:
+            st.warning("No data for the selected filters.")
+        else:
+            df_sku = df.sort_values("forecast_month")
+
+            # columns like Jan-2026 etc.
+            month_labels = df_sku["forecast_month"].dt.strftime("%b-%Y").tolist()
+            months_key = df_sku["forecast_month"].dt.strftime("%Y-%m").tolist()
+
+            # map row label -> column in df_sku
+            metric_map = [
+                ("Opening Inventory", "opening_inventory_units"),
+                ("Planned Intake", "planned_intake_units"),
+                ("Actual Intake", "actual_intake_units"),
+                ("Forecasted Sales", "forecasted_sales_units"),
+                ("Actual Sales", "actual_sales_units"),
+                ("Closing Inventory", "closing_inventory_units"),
+                ("Future Cover (months)", "future_cover_months"),
+            ]
+
+            rows = []
+            for label, col_name in metric_map:
+                row = {"Metric": label}
+                for mk, ml in zip(months_key, month_labels):
+                    mask = df_sku["forecast_month"].dt.strftime("%Y-%m") == mk
+                    vals = df_sku.loc[mask, col_name]
+                    val = float(vals.iloc[0]) if not vals.empty else 0.0
+                    row[ml] = val
+                rows.append(row)
+
+            layout_df = pd.DataFrame(rows).set_index("Metric")
+
+            st.write(f"**SKU:** {df_sku['item_id'].iloc[0]} — {df_sku['item_name'].iloc[0]}")
+            if "category" in df_sku.columns and "segment" in df_sku.columns:
+                st.caption(
+                    f"Category: {df_sku['category'].iloc[0] or '-'} | "
+                    f"Segment: {df_sku['segment'].iloc[0] or '-'}"
+                )
+
+            st.dataframe(layout_df, use_container_width=True)
 
 # --------------------------- PLANNER ---------------------------
 with tab_plan:
