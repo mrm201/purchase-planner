@@ -25,6 +25,80 @@ if "edited_plan" not in st.session_state:
 if "manual_adjustments" not in st.session_state:
     st.session_state["manual_adjustments"] = {}
 
+
+# ---------- Helper to recompute inventory flow after edits ----------
+
+def recompute_inventory_flow(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recalculate opening_stock, ending_stock_after_order, and stock_cover_months
+    per item_id / month using the (possibly edited) optimized_order_qty.
+
+    Logic per item_id, ordered by forecast_month:
+      opening_0 = existing opening_stock (or opening_inventory_units)
+      closing = opening + in_transit + optimized_order_qty - demand
+      cover = closing / demand
+      next opening = closing
+    """
+    df = df.copy()
+
+    if "forecast_month" not in df.columns:
+        return df
+
+    # Normalize forecast_month to datetime for sorting
+    fm = pd.to_datetime(
+        df["forecast_month"].astype(str).str[:7], format="%Y-%m", errors="coerce"
+    )
+    df["_fm"] = fm
+
+    df.sort_values(["item_id", "_fm"], inplace=True)
+
+    # Make sure needed columns exist
+    if "in_transit" not in df.columns:
+        df["in_transit"] = 0
+    if "opening_stock" not in df.columns:
+        if "opening_inventory_units" in df.columns:
+            df["opening_stock"] = df["opening_inventory_units"]
+        else:
+            df["opening_stock"] = 0
+    if "adjusted_demand" not in df.columns:
+        if "forecasted_sales_units" in df.columns:
+            df["adjusted_demand"] = df["forecasted_sales_units"]
+        else:
+            df["adjusted_demand"] = 0
+
+    # Recompute per item
+    for item_id, idxs in df.groupby("item_id").groups.items():
+        idxs = list(idxs)
+        if not idxs:
+            continue
+
+        # initial opening from first row's opening_stock
+        opening = float(df.loc[idxs[0], "opening_stock"])
+
+        for idx in idxs:
+            df.loc[idx, "opening_stock"] = int(round(opening))
+
+            in_transit = float(df.loc[idx, "in_transit"])
+            demand = float(df.loc[idx, "adjusted_demand"])
+            order_qty = float(df.loc[idx, "optimized_order_qty"]) if "optimized_order_qty" in df.columns else 0.0
+
+            closing = opening + in_transit + order_qty - demand
+            if closing < 0:
+                closing = 0.0
+
+            df.loc[idx, "ending_stock_after_order"] = int(round(closing))
+            if demand > 0:
+                cover = closing / demand
+            else:
+                cover = 0.0
+            df.loc[idx, "stock_cover_months"] = float(cover)
+
+            opening = closing
+
+    df.drop(columns=["_fm"], inplace=True, errors="ignore")
+    return df
+
+
 # ---------- Sidebar configuration ----------
 
 with st.sidebar:
@@ -52,6 +126,7 @@ with st.sidebar:
     st.divider()
 
     run_btn = st.button("🚀 Generate Plan", type="primary", use_container_width=True)
+
 
 # main title
 st.title("📦 Purchase Plan Forecaster")
@@ -89,6 +164,7 @@ with st.expander("📁 Upload Data Files", expanded=not run_btn):
             "- volume_discounts.json"
         )
 
+
 # ---------- Generate plan ----------
 
 if run_btn:
@@ -121,7 +197,7 @@ if run_btn:
                 with open(os.path.join(data_dir, "sales_forecasts_n12.json")) as f:
                     pf.load_sales_forecasts_n12(json.load(f))
 
-            # optional JSONs (not yet used in engine) – safely ignore if missing on disk
+            # optional JSONs (ignored for now)
             optional_files = [
                 "promotional_calendar.json",
                 "supplier_reliability.json",
@@ -132,7 +208,7 @@ if run_btn:
             for fname in optional_files:
                 path = os.path.join(data_dir, fname)
                 if os.path.exists(path):
-                    # placeholder: keep for future integration; do nothing for now
+                    # reserved for future integration
                     pass
 
             # Generate purchase plan
@@ -155,6 +231,7 @@ if run_btn:
         st.error(f"❌ Error: {str(e)}")
         st.exception(e)
 
+
 # ---------- Display & edit plan ----------
 
 if st.session_state["forecasts"]:
@@ -163,11 +240,7 @@ if st.session_state["forecasts"]:
     df = pd.DataFrame(forecasts_data)
 
     # Map engine columns to what the UI expects (if not already present)
-    # Our engine provides:
-    # - opening_inventory_units
-    # - closing_inventory_units
-    # - future_cover_months
-    # We'll derive UI names from these.
+    # Engine provides: opening_inventory_units, closing_inventory_units, future_cover_months
     if "opening_stock" not in df.columns and "opening_inventory_units" in df.columns:
         df["opening_stock"] = df["opening_inventory_units"]
     if "ending_stock_after_order" not in df.columns and "closing_inventory_units" in df.columns:
@@ -181,13 +254,24 @@ if st.session_state["forecasts"]:
     if "stockout_risk" not in df.columns:
         df["stockout_risk"] = 0  # or False
 
+    # Apply any manual adjustments from previous runs
+    if st.session_state["manual_adjustments"]:
+        for key, new_qty in st.session_state["manual_adjustments"].items():
+            item_id, month = key.split("_", 1)
+            mask = (df["item_id"] == item_id) & (df["forecast_month"] == month)
+            if "optimized_order_qty" in df.columns:
+                df.loc[mask, "optimized_order_qty"] = new_qty
+
+    # Recompute inventory after applying manual adjustments
+    df = recompute_inventory_flow(df)
+
     # ---------- Summary metrics ----------
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         total_orders = df.get("optimized_order_qty", pd.Series([0])).sum()
-        st.metric("Total Orders", f"{total_orders:,.0f}")
+        st.metric("Total Orders", f"{int(total_orders):,}")
 
     with col2:
         total_cost = df.get("total_order_cost", pd.Series([0.0])).sum()
@@ -205,7 +289,7 @@ if st.session_state["forecasts"]:
 
     with col5:
         items_count = df.get("item_id", pd.Series([])).nunique()
-        st.metric("Items", items_count)
+        st.metric("Items", int(items_count))
 
     st.divider()
 
@@ -226,14 +310,6 @@ if st.session_state["forecasts"]:
             df["is_editable"] = False
 
         df["original_order_qty"] = df.get("optimized_order_qty", 0)
-
-        # Apply any manual adjustments
-        if st.session_state["manual_adjustments"]:
-            for key, new_qty in st.session_state["manual_adjustments"].items():
-                item_id, month = key.split("_", 1)
-                mask = (df["item_id"] == item_id) & (df["forecast_month"] == month)
-                if "optimized_order_qty" in df.columns:
-                    df.loc[mask, "optimized_order_qty"] = new_qty
 
         # Configure columns
         column_config = {
@@ -271,7 +347,6 @@ if st.session_state["forecasts"]:
             "is_editable": st.column_config.CheckboxColumn("Edit?", width="small"),
         }
 
-        # Columns to display if they exist
         display_cols = [
             "forecast_month",
             "item_id",
@@ -301,10 +376,13 @@ if st.session_state["forecasts"]:
             num_rows="fixed",
         )
 
-        # Detect changes
+        # Detect changes vs original_order_qty
         changes = []
         for idx in edited_df.index:
-            if "is_editable" in edited_df.columns and edited_df.loc[idx, "is_editable"]:
+            if (
+                "is_editable" in edited_df.columns
+                and bool(edited_df.loc[idx, "is_editable"])
+            ):
                 orig = df.loc[idx, "original_order_qty"]
                 new = edited_df.loc[idx, "optimized_order_qty"]
                 if orig != new:
