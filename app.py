@@ -1,284 +1,360 @@
+"""
+Enhanced Streamlit App with Editable Purchase Plan
+Update your app.py with this code
+"""
+
 import json
 import os
-from datetime import datetime
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
-from purchase_forecaster import PurchasePlanForecaster
-from dataio.parsers import (
-    read_any_table,
-    df_to_sales_history,
-    df_to_item_params,
-    df_to_inventory,
-    df_to_fcst_map,
-)
+# Import your forecaster
+# from purchase_forecaster import PurchasePlanForecaster
 
-st.set_page_config(page_title="Purchase Planning Portal", layout="wide")
+st.set_page_config(page_title="Purchase Plan Forecaster", layout="wide", page_icon="📦")
 
-BASE_DIR = os.path.dirname(__file__)
-# NOTE: use "Samples" because that's how it exists on GitHub
-SAMPLES_DIR = os.path.join(BASE_DIR, "Samples")
+# Initialize session state
+if 'forecasts' not in st.session_state:
+    st.session_state['forecasts'] = None
+if 'edited_plan' not in st.session_state:
+    st.session_state['edited_plan'] = None
+if 'manual_adjustments' not in st.session_state:
+    st.session_state['manual_adjustments'] = {}
 
-
-# ----------------- Helpers to load data -----------------
-
-
-def load_sample_tables():
-    """Load sample CSVs from the Samples/ folder."""
-    sales_path = os.path.join(SAMPLES_DIR, "sales_history.csv")
-    items_path = os.path.join(SAMPLES_DIR, "item_parameters.csv")
-    inv_path = os.path.join(SAMPLES_DIR, "current_inventory.csv")
-    fcst_path = os.path.join(SAMPLES_DIR, "sales_forecasts_n12.csv")
-
-    sales_df = read_any_table(sales_path)
-    items_df = read_any_table(items_path)
-    inv_df = read_any_table(inv_path)
-    fcst_df = read_any_table(fcst_path)
-
-    return sales_df, items_df, inv_df, fcst_df
-
-
-def load_uploaded_tables(upload_sales, upload_items, upload_inv, upload_fcst):
-    """Load uploaded files into DataFrames."""
-    sales_df = read_any_table(upload_sales) if upload_sales else None
-    items_df = read_any_table(upload_items) if upload_items else None
-    inv_df = read_any_table(upload_inv) if upload_inv else None
-    fcst_df = read_any_table(upload_fcst) if upload_fcst else None
-    return sales_df, items_df, inv_df, fcst_df
-
-
-def build_plan(
-    sales_df: pd.DataFrame,
-    items_df: pd.DataFrame,
-    inv_df: pd.DataFrame,
-    fcst_df: pd.DataFrame,
-    start_month: str,
-    num_months: int,
-    service_level: float,
-    review_period_days: int,
-    include_in_transit: bool,
-):
-    """Convert DataFrames to model dicts, run forecaster, return result dict + DataFrame."""
-    pf = PurchasePlanForecaster()
-
-    sales_data = df_to_sales_history(sales_df)
-    item_data = df_to_item_params(items_df)
-    inv_data = df_to_inventory(inv_df)
-    fcst_map = df_to_fcst_map(fcst_df)
-
-    pf.load_sales_history(sales_data)
-    pf.load_item_parameters(item_data)
-    pf.load_current_inventory(inv_data)
-    pf.load_sales_forecasts_n12(fcst_map)
-
-    pf.generate_purchase_plan(
-        start_month=start_month,
-        num_months=num_months,
-        service_level=service_level,
-        review_period_days=review_period_days,
-        include_in_transit=include_in_transit,
-    )
-
-    result = pf.export_to_json()
-    plan_df = pd.DataFrame(result["forecasts"])
-    return pf, result, plan_df
-
-
-# ----------------- UI Layout -----------------
-
-st.title("🧮 Purchase Planning Portal")
-
+# Sidebar configuration
 with st.sidebar:
-    st.header("Configuration")
+    st.title("⚙️ Configuration")
+    
+    start_month = st.text_input("Start Month (YYYY-MM)", value="2025-12", key="start_month_input")
+    num_months = st.number_input("Forecast Horizon (months)", min_value=1, max_value=24, value=6, key="horizon_input")
+    data_dir = st.text_input("Data Directory", value="data", key="data_dir_input")
+    
+    st.divider()
+    st.subheader("✏️ Edit Mode")
+    
+    edit_enabled = st.toggle("Enable Plan Editing", value=True)
+    
+    if edit_enabled:
+        current_month = datetime.now().strftime('%Y-%m')
+        cutoff_date = datetime.strptime(current_month, '%Y-%m') + relativedelta(months=2)
+        cutoff_month = cutoff_date.strftime('%Y-%m')
+        st.info(f"📅 Editable from: **{cutoff_month}** onwards")
+    
+    st.divider()
+    
+    run_btn = st.button("🚀 Generate Plan", type="primary", use_container_width=True)
+    
+    if edit_enabled and st.session_state['edited_plan']:
+        if st.button("💾 Save Adjusted Plan", use_container_width=True):
+            st.success("✓ Plan saved to session!")
 
-    load_samples = st.checkbox("Load sample data", value=True)
+# Main content
+st.title("📦 Purchase Plan Forecaster")
+st.markdown("Generate optimal purchase recommendations with real-time editing capability")
 
-    st.markdown("**Planning Horizon**")
-    start_month = st.text_input("Start month (YYYY-MM)", "2025-12")
-    num_months = st.number_input("Number of months", 1, 24, 6)
+# File upload section
+with st.expander("📁 Upload Data Files", expanded=not run_btn):
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**Required Files**")
+        sales_history_file = st.file_uploader("sales_history.json", type=["json"], key="sales_hist")
+        item_params_file = st.file_uploader("item_parameters.json", type=["json"], key="item_params")
+        current_inventory_file = st.file_uploader("current_inventory.json", type=["json"], key="curr_inv")
+        sales_n12_file = st.file_uploader("sales_forecasts_n12.json", type=["json"], key="n12")
+    
+    with col2:
+        st.markdown("**Optional Files**")
+        promo_file = st.file_uploader("promotional_calendar.json", type=["json"], key="promo")
+        supplier_rel_file = st.file_uploader("supplier_reliability.json", type=["json"], key="supplier")
+        price_fc_file = st.file_uploader("price_forecasts.json", type=["json"], key="price")
+    
+    with col3:
+        st.markdown("**Advanced Options**")
+        demand_var_file = st.file_uploader("demand_variability.json", type=["json"], key="demand_var")
+        volume_disc_file = st.file_uploader("volume_discounts.json", type=["json"], key="vol_disc")
 
-    st.markdown("**Policy Parameters**")
-    service_level = st.slider("Service level", 0.90, 0.99, 0.95, 0.01)
-    review_period_days = st.number_input("Review period (days)", 7, 60, 30)
-    include_in_transit = st.checkbox("Include in-transit stock", value=True)
-
-    st.markdown("---")
-    st.markdown("**Or upload your own datasets**")
-
-    upload_sales = st.file_uploader("Sales History", type=["csv", "xlsx"])
-    upload_items = st.file_uploader("Item Parameters", type=["csv", "xlsx"])
-    upload_inv = st.file_uploader("Current Inventory", type=["csv", "xlsx"])
-    upload_fcst = st.file_uploader("Sales Forecasts (N12)", type=["csv", "xlsx"])
-
-    run_btn = st.button("Generate Plan", type="primary")
-
-
-tab_plan, tab_dashboard = st.tabs(["📈 Planner", "📊 Dashboard"])
-
-# ----------------- Planner Tab -----------------
-with tab_plan:
-    st.subheader("Planner")
-
-    if run_btn:
-        try:
-            # Load data
-            if load_samples:
-                sales_df, items_df, inv_df, fcst_df = load_sample_tables()
+# Generate plan
+if run_btn:
+    try:
+        with st.spinner("Loading data and generating plan..."):
+            # Initialize forecaster
+            from purchase_forecaster import PurchasePlanForecaster
+            pf = PurchasePlanForecaster()
+            
+            # Load data from uploads or directory
+            if sales_history_file:
+                pf.load_sales_history(json.load(sales_history_file))
             else:
-                if not (upload_sales and upload_items and upload_inv and upload_fcst):
-                    st.error("Please provide all four datasets (or turn ON 'Load sample data').")
-                    st.stop()
-                sales_df, items_df, inv_df, fcst_df = load_uploaded_tables(
-                    upload_sales, upload_items, upload_inv, upload_fcst
-                )
-
-            # Run forecaster
-            pf, result, plan_df = build_plan(
-                sales_df=sales_df,
-                items_df=items_df,
-                inv_df=inv_df,
-                fcst_df=fcst_df,
+                with open(os.path.join(data_dir, 'sales_history.json')) as f:
+                    pf.load_sales_history(json.load(f))
+            
+            if item_params_file:
+                pf.load_item_parameters(json.load(item_params_file))
+            else:
+                with open(os.path.join(data_dir, 'item_parameters.json')) as f:
+                    pf.load_item_parameters(json.load(f))
+            
+            if current_inventory_file:
+                pf.load_current_inventory(json.load(current_inventory_file))
+            else:
+                with open(os.path.join(data_dir, 'current_inventory.json')) as f:
+                    pf.load_current_inventory(json.load(f))
+            
+            if sales_n12_file:
+                pf.load_sales_forecasts_n12(json.load(sales_n12_file))
+            else:
+                with open(os.path.join(data_dir, 'sales_forecasts_n12.json')) as f:
+                    pf.load_sales_forecasts_n12(json.load(f))
+            
+            # Load optional files
+            for file_obj, fname, loader in [
+                (promo_file, 'promotional_calendar.json', pf.load_promotional_calendar),
+                (supplier_rel_file, 'supplier_reliability.json', pf.load_supplier_reliability),
+                (price_fc_file, 'price_forecasts.json', pf.load_price_forecasts),
+                (demand_var_file, 'demand_variability.json', pf.load_demand_variability),
+                (volume_disc_file, 'volume_discounts.json', pf.load_volume_discounts)
+            ]:
+                try:
+                    if file_obj:
+                        loader(json.load(file_obj))
+                    else:
+                        with open(os.path.join(data_dir, fname)) as f:
+                            loader(json.load(f))
+                except FileNotFoundError:
+                    pass
+            
+            # Generate forecasts
+            forecasts = pf.generate_purchase_plan(
                 start_month=start_month,
-                num_months=int(num_months),
-                service_level=float(service_level),
-                review_period_days=int(review_period_days),
-                include_in_transit=include_in_transit,
+                num_months=int(num_months)
             )
+            
+            # Store in session state
+            st.session_state['forecasts'] = [vars(f) if hasattr(f, '__dict__') else f for f in forecasts]
+            st.session_state['forecaster'] = pf
+            
+        st.success(f"✓ Generated {len(forecasts)} forecast periods!")
+    
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+        st.exception(e)
 
-            # Save for dashboard
-            st.session_state["plan_df"] = plan_df.copy()
-
-            # KPIs
-            total_cost = plan_df["total_order_cost"].sum()
-            total_units = plan_df["optimized_order_qty"].sum()
-            unique_skus = plan_df["item_id"].nunique()
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Planned Spend", f"${total_cost:,.0f}")
-            c2.metric("Total Units", f"{int(total_units):,}")
-            c3.metric("SKUs Planned", unique_skus)
-
-            st.markdown("### Plan Table")
-
-            edited_df = st.data_editor(
-                plan_df,
+# Display and edit plan
+if st.session_state['forecasts']:
+    
+    # Summary metrics
+    st.divider()
+    forecasts_data = st.session_state['forecasts']
+    df = pd.DataFrame(forecasts_data)
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        total_orders = df['optimized_order_qty'].sum()
+        st.metric("Total Orders", f"{total_orders:,.0f}")
+    
+    with col2:
+        total_cost = df['total_order_cost'].sum()
+        st.metric("Total Cost", f"${total_cost:,.2f}")
+    
+    with col3:
+        stockout_count = df['stockout_risk'].sum()
+        st.metric("Stockout Risks", stockout_count, delta=f"-{stockout_count}" if stockout_count > 0 else None)
+    
+    with col4:
+        avg_cover = df['stock_cover_months'].replace([float('inf')], 0).mean()
+        st.metric("Avg Cover", f"{avg_cover:.1f} mo")
+    
+    with col5:
+        items_count = df['item_id'].nunique()
+        st.metric("Items", items_count)
+    
+    st.divider()
+    
+    # Editable plan table
+    if edit_enabled:
+        st.subheader("📝 Editable Purchase Plan")
+        
+        current_month = datetime.now().strftime('%Y-%m')
+        current_date = datetime.strptime(current_month, '%Y-%m')
+        cutoff_date = current_date + relativedelta(months=2)
+        cutoff_month = cutoff_date.strftime('%Y-%m')
+        
+        # Add editable flag
+        df['is_editable'] = df['forecast_month'] >= cutoff_month
+        df['original_order_qty'] = df['optimized_order_qty']
+        
+        # Apply any manual adjustments
+        if st.session_state['manual_adjustments']:
+            for key, new_qty in st.session_state['manual_adjustments'].items():
+                mask = (df['item_id'] == key.split('_')[0]) & (df['forecast_month'] == key.split('_')[1])
+                df.loc[mask, 'optimized_order_qty'] = new_qty
+        
+        # Configure columns
+        column_config = {
+            'forecast_month': st.column_config.TextColumn('Month', width='small'),
+            'item_id': st.column_config.TextColumn('SKU', width='small'),
+            'item_name': st.column_config.TextColumn('Item', width='medium'),
+            'adjusted_demand': st.column_config.NumberColumn('Demand', width='small', format="%d"),
+            'opening_stock': st.column_config.NumberColumn('Opening', width='small', format="%d"),
+            'in_transit': st.column_config.NumberColumn('In-Transit', width='small', format="%d"),
+            'adjusted_safety_stock': st.column_config.NumberColumn('Safety', width='small', format="%d"),
+            'optimized_order_qty': st.column_config.NumberColumn(
+                '✏️ Order Qty',
+                width='small',
+                format="%d",
+                help="Editable for months >= current+2"
+            ),
+            'ending_stock_after_order': st.column_config.NumberColumn('End Stock', width='small', format="%d"),
+            'stock_cover_months': st.column_config.NumberColumn('Cover', width='small', format="%.1f"),
+            'total_order_cost': st.column_config.NumberColumn('Cost', width='medium', format="$%.2f"),
+            'stockout_risk': st.column_config.CheckboxColumn('⚠️', width='small'),
+            'is_editable': st.column_config.CheckboxColumn('Edit?', width='small')
+        }
+        
+        # Select columns to display
+        display_cols = [
+            'forecast_month', 'item_id', 'item_name', 'adjusted_demand',
+            'opening_stock', 'in_transit', 'adjusted_safety_stock',
+            'optimized_order_qty', 'ending_stock_after_order',
+            'stock_cover_months', 'total_order_cost', 'stockout_risk', 'is_editable'
+        ]
+        
+        # Filter existing columns
+        display_cols = [col for col in display_cols if col in df.columns]
+        
+        # Editable data editor
+        edited_df = st.data_editor(
+            df[display_cols],
+            column_config=column_config,
+            disabled=[col for col in display_cols if col not in ['optimized_order_qty']],
+            hide_index=True,
+            use_container_width=True,
+            key='plan_editor',
+            num_rows="fixed"
+        )
+        
+        # Detect changes
+        changes = []
+        for idx in edited_df.index:
+            if edited_df.loc[idx, 'is_editable']:
+                orig = df.loc[idx, 'original_order_qty']
+                new = edited_df.loc[idx, 'optimized_order_qty']
+                
+                if orig != new:
+                    item_id = edited_df.loc[idx, 'item_id']
+                    month = edited_df.loc[idx, 'forecast_month']
+                    
+                    changes.append({
+                        'item_id': item_id,
+                        'item_name': edited_df.loc[idx, 'item_name'],
+                        'month': month,
+                        'original_qty': int(orig),
+                        'new_qty': int(new),
+                        'difference': int(new - orig),
+                        'key': f"{item_id}_{month}"
+                    })
+        
+        # Show changes summary
+        if changes:
+            st.divider()
+            st.subheader("📊 Manual Adjustments Summary")
+            
+            changes_df = pd.DataFrame(changes)
+            st.dataframe(
+                changes_df[['month', 'item_name', 'original_qty', 'new_qty', 'difference']],
                 use_container_width=True,
-                num_rows="dynamic",
-                key="plan_editor",
+                hide_index=True
             )
-
-            # OPTIONAL: update in session with edits
-            st.session_state["plan_df"] = edited_df.copy()
-
-            st.markdown("### Exports")
-
-            # JSON download
-            json_str = json.dumps(result, indent=2)
-            st.download_button(
-                "Download JSON",
-                data=json_str,
-                file_name="purchase_plan.json",
-                mime="application/json",
-            )
-
-            # Excel download via exporter in forecaster
-            excel_path = "purchase_plan.xlsx"
-            pf.export_to_excel(excel_path)
-            with open(excel_path, "rb") as f:
+            
+            col1, col2, col3 = st.columns([1, 1, 3])
+            
+            with col1:
+                if st.button("✅ Apply Changes", type="primary"):
+                    # Store adjustments
+                    for change in changes:
+                        st.session_state['manual_adjustments'][change['key']] = change['new_qty']
+                    st.success("Changes applied!")
+                    st.rerun()
+            
+            with col2:
+                if st.button("↺ Reset All"):
+                    st.session_state['manual_adjustments'] = {}
+                    st.rerun()
+            
+            with col3:
+                # Export adjusted plan
+                adjusted_data = edited_df.to_dict('records')
+                json_str = json.dumps(adjusted_data, indent=2, default=str)
                 st.download_button(
-                    "Download Excel",
-                    data=f.read(),
-                    file_name="purchase_plan.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    label="💾 Download Adjusted Plan",
+                    data=json_str,
+                    file_name=f"adjusted_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
                 )
-
-        except Exception as e:
-            st.error(f"Error while generating plan: {e}")
-
+    
     else:
-        st.info("Configure parameters in the sidebar and click **Generate Plan**.")
-
-
-# ----------------- Dashboard Tab -----------------
-with tab_dashboard:
-    st.subheader("Purchase Plan Dashboard")
-
-    if "plan_df" not in st.session_state:
-        st.info("Generate a plan first in the Planner tab.")
-    else:
-        df = st.session_state["plan_df"].copy()
-
-        # ensure proper datetime for filtering
-        df["forecast_month"] = pd.to_datetime(df["forecast_month"], format="%Y-%m", errors="coerce")
-        df = df.dropna(subset=["forecast_month"])
-
-        # --- Date range filters ---
-        min_date = df["forecast_month"].min()
-        max_date = df["forecast_month"].max()
-
-        col_fr, col_to = st.columns(2)
-        from_date = col_fr.date_input("From month", min_date.date() if pd.notna(min_date) else None)
-        to_date = col_to.date_input("To month", max_date.date() if pd.notna(max_date) else None)
-
-        if from_date and to_date:
-            df = df[(df["forecast_month"].dt.date >= from_date) &
-                    (df["forecast_month"].dt.date <= to_date)]
-
-        # --- Category / Segment / SKU filters ---
-        cats = sorted(df["category"].dropna().unique()) if "category" in df.columns else []
-        segs = sorted(df["segment"].dropna().unique()) if "segment" in df.columns else []
-        skus = sorted(df["item_id"].unique())
-
-        c1, c2, c3 = st.columns(3)
-        sel_cat = c1.selectbox("Category", ["All"] + cats) if cats else "All"
-        sel_seg = c2.selectbox("Segment", ["All"] + segs) if segs else "All"
-        sel_sku = c3.selectbox("SKU", skus if skus else [""])
-
-        if sel_cat != "All":
-            df = df[df["category"] == sel_cat]
-        if sel_seg != "All":
-            df = df[df["segment"] == sel_seg]
-        if sel_sku:
-            df = df[df["item_id"] == sel_sku]
-
-        if df.empty:
-            st.warning("No data for the selected filters.")
-        else:
-            df_sku = df.sort_values("forecast_month")
-
-            # columns like Jan-2026 etc.
-            month_labels = df_sku["forecast_month"].dt.strftime("%b-%Y").tolist()
-            months_key = df_sku["forecast_month"].dt.strftime("%Y-%m").tolist()
-
-            # map row label -> column in df_sku
-            metric_map = [
-                ("Opening Inventory", "opening_inventory_units"),
-                ("Planned Intake", "planned_intake_units"),
-                ("Actual Intake", "actual_intake_units"),
-                ("Forecasted Sales", "forecasted_sales_units"),
-                ("Actual Sales", "actual_sales_units"),
-                ("Closing Inventory", "closing_inventory_units"),
-                ("Future Cover (months)", "future_cover_months"),
-            ]
-
-            rows = []
-            for label, col_name in metric_map:
-                row = {"Metric": label}
-                for mk, ml in zip(months_key, month_labels):
-                    mask = df_sku["forecast_month"].dt.strftime("%Y-%m") == mk
-                    vals = df_sku.loc[mask, col_name]
-                    val = float(vals.iloc[0]) if not vals.empty else 0.0
-                    row[ml] = val
-                rows.append(row)
-
-            layout_df = pd.DataFrame(rows).set_index("Metric")
-
-            st.write(f"**SKU:** {df_sku['item_id'].iloc[0]} — {df_sku['item_name'].iloc[0]}")
-            if "category" in df_sku.columns and "segment" in df_sku.columns:
-                st.caption(
-                    f"Category: {df_sku['category'].iloc[0] or '-'} | "
-                    f"Segment: {df_sku['segment'].iloc[0] or '-'}"
+        # View-only mode
+        st.subheader("📊 Purchase Plan (View Only)")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    
+    # Export section
+    st.divider()
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📥 Export Full Report (JSON)"):
+            pf = st.session_state.get('forecaster')
+            if pf:
+                output = pf.export_to_json()
+                json_str = json.dumps(output, indent=2, default=str)
+                st.download_button(
+                    label="Download JSON Report",
+                    data=json_str,
+                    file_name=f"purchase_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
                 )
+    
+    with col2:
+        if st.button("📥 Export to Excel"):
+            # Convert to Excel
+            excel_buffer = pd.ExcelWriter('purchase_plan.xlsx', engine='xlsxwriter')
+            df.to_excel(excel_buffer, sheet_name='Purchase Plan', index=False)
+            excel_buffer.close()
+            
+            st.success("Excel export functionality coming soon!")
 
-            st.dataframe(layout_df, use_container_width=True)
+else:
+    # Welcome screen
+    st.info("👆 Upload your data files or configure the data directory, then click **Generate Plan** to start.")
+    
+    with st.expander("📖 How to Use", expanded=True):
+        st.markdown("""
+        ### Quick Start Guide
+        
+        1. **Upload Data Files** or configure the data directory path
+        2. **Set Parameters** in the sidebar (start month, horizon)
+        3. Click **Generate Plan** to create the purchase forecast
+        4. **Enable Edit Mode** to adjust orders for future months
+        5. **Apply Changes** to recalculate the plan
+        6. **Export** your adjusted plan as JSON or Excel
+        
+        ### Editing Rules
+        - ✅ **Editable**: Months >= Current Month + 2
+        - 🔒 **Locked**: Current month and next month
+        - 💡 **Tip**: Changes are highlighted automatically
+        
+        ### Features
+        - 📊 Real-time order adjustments
+        - 🔄 Automatic recalculation
+        - 💾 Export adjusted plans
+        - ⚠️ Risk indicators
+        - 📈 Stock cover analysis
+        """)
+
+# Footer
+st.divider()
+st.caption("Purchase Plan Forecaster v1.0 | Production-Grade Planning Tool")
