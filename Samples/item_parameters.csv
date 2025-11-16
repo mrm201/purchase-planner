@@ -1,0 +1,2 @@
+item_id,item_name,supplier,order_lead_time_days,minimum_order_qty,order_multiple,unit_cost,shelf_life_days,safety_stock_days,max_stock_cover_months
+SKU-001,Widget A,Acme Co,30,100,50,12.5,,14,2.0

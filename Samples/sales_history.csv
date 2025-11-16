@@ -1,0 +1,6 @@
+month,item_id,item_name,actual_sales_qty,stock_available,lost_sales_qty,unit_price,category
+2025-07,SKU-001,Widget A,80,TRUE,0,19.99,Widgets
+2025-08,SKU-001,Widget A,92,TRUE,0,19.99,Widgets
+2025-09,SKU-001,Widget A,110,TRUE,0,19.99,Widgets
+2025-10,SKU-001,Widget A,95,TRUE,0,19.99,Widgets
+2025-11,SKU-001,Widget A,105,TRUE,0,19.99,Widgets

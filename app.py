@@ -1,9 +1,11 @@
-# --- app.py (Purchase Planning v0.2+) ---
+# app.py — Purchase Planning v0.2+ (Streamlit)
 
-import json
-import os
+import sys, os, json
 import pandas as pd
 import streamlit as st
+
+# Ensure local modules are importable when run from anywhere
+sys.path.append(os.path.dirname(__file__))
 
 from purchase_forecaster import PurchasePlanForecaster
 from dataio.parsers import (
@@ -17,23 +19,22 @@ from storage.models import User, Run, RunLine
 st.set_page_config(page_title="Purchase Planning v0.2+", layout="wide")
 st.title("🧮 Purchase Planning – v0.2+ (Streamlit)")
 
-# ---- DB init
+# Init DB (SQLite)
 init_db()
 
-# ---- Helper: sample data folder (optional)
+# Optional samples path
 SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples")
 def _read_csv(path):
     return pd.read_csv(path) if os.path.exists(path) else None
 
-# ---- TABS
 tab_plan, tab_history = st.tabs(["📈 Planner", "🕘 Run History"])
 
-# ===================== PLANNER TAB =====================
+# --------------------------- PLANNER ---------------------------
 with tab_plan:
     with st.sidebar:
         st.header("Demo Helpers")
         load_samples = st.toggle("Load sample data", value=True)
-        st.caption("When ON, sample CSVs from /samples are used if you don't upload files.")
+        st.caption("When ON, /samples CSVs will be used if you don't upload files.")
 
         st.divider()
         st.header("Upload Data")
@@ -67,13 +68,13 @@ with tab_plan:
         st.divider()
         run_btn = st.button("Generate Plan")
 
-    # --- Read uploads (if provided)
+    # Read uploads
     sales_df = read_any_table(f_sales) if f_sales else None
     items_df = read_any_table(f_items) if f_items else None
     inv_df   = read_any_table(f_inv)   if f_inv   else None
     fcst_df  = read_any_table(f_fcst)  if f_fcst  else None
 
-    # --- Load samples when toggled and file not uploaded
+    # Load sample CSVs if toggle on
     if load_samples:
         if sales_df is None: sales_df = _read_csv(os.path.join(SAMPLES_DIR, "sales_history.csv"))
         if items_df is None: items_df = _read_csv(os.path.join(SAMPLES_DIR, "item_parameters.csv"))
@@ -82,7 +83,7 @@ with tab_plan:
 
     def _validate_all_inputs():
         if any(x is None for x in [sales_df, items_df, inv_df, fcst_df]):
-            st.error("Please provide **all four** datasets (either via upload or turn ON 'Load sample data').")
+            st.error("Please provide **all four** datasets (or turn ON 'Load sample data').")
             st.stop()
         errs = []
         errs += validate_required_columns(
@@ -120,7 +121,7 @@ with tab_plan:
         pf.load_current_inventory(df_to_inventory(inv_df))
         pf.load_sales_forecasts_n12(df_to_fcst_map(fcst_df))
 
-        # Run with service-level policy
+        # Run engine
         pf.generate_purchase_plan(
             start_month=start_month,
             num_months=int(months),
@@ -159,7 +160,7 @@ with tab_plan:
             sku = st.selectbox("Select SKU", sku_options)
             hist = sales_df[sales_df["item_id"] == sku].sort_values("month") if sales_df is not None else pd.DataFrame()
             fcst = fcst_df[fcst_df["item_id"] == sku].sort_values("month") if fcst_df is not None else pd.DataFrame()
-            planned = edited_df[(edited_df["item_id"] == sku)][["forecast_month","optimized_order_qty"]]
+            planned = edited_df[edited_df["item_id"] == sku][["forecast_month","optimized_order_qty"]]
 
             st.caption("Actuals vs Forecast")
             st.line_chart(
@@ -168,7 +169,6 @@ with tab_plan:
                     "forecast": fcst.set_index("month")["forecasted_sales_qty"] if not fcst.empty else pd.Series(dtype=float),
                 })
             )
-
             st.caption("Planned Order Qty by Forecast Month")
             if not planned.empty:
                 st.bar_chart(planned.set_index("forecast_month"))
@@ -232,7 +232,7 @@ with tab_plan:
     else:
         st.info("Upload data (or enable *Load sample data*), set parameters, then click **Generate Plan**.")
 
-# ===================== HISTORY TAB =====================
+# --------------------------- HISTORY ---------------------------
 with tab_history:
     st.subheader("Saved Runs")
     sess = SessionLocal()

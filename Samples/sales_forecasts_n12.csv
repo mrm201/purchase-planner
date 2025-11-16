@@ -1,0 +1,4 @@
+item_id,month,forecasted_sales_qty,forecast_source,confidence_score
+SKU-001,2025-12,150,stat,0.70
+SKU-001,2026-01,140,stat,0.72
+SKU-001,2026-02,130,stat,0.74
